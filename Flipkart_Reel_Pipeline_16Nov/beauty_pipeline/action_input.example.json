@@ -1,0 +1,60 @@
+{
+  "scene_id": "S03_P01-swatch",
+  "plan": {
+    "action_summary": "A silent, hands-and-forearm-only macro: the right hand draws one smooth diagonal maroon stroke on the inner left forearm with the uncapped crayon, then lifts the crayon slightly off the skin.",
+    "script_requirements": [
+      "Silent clip. No face, no speech, no lip movement. Any voiceover is added later in the edit and is never acted out.",
+      "45-degree macro on the left forearm resting inner side up on cream silk, warm lamp light from frame-left.",
+      "Exactly one stroke, about 5 cm long, drawn left to right on a clean forearm. No second stroke, no blending, no rubbing.",
+      "Keep the crayon one consistent size and shape: black body, maroon tip, uncapped, cap not in frame."
+    ],
+    "start_pose": "Left forearm lies flat, inner side up, on cream silk; skin bare and dry. Right hand holds the uncapped crayon like a pencil, tip about 1 cm above the inner forearm, left end of the stroke area. Deep-maroon almond nails visible on the right hand.",
+    "end_pose": "One clean maroon diagonal stroke on the forearm. Crayon lifted about 2 cm above the skin at the right end of the stroke. Left arm unmoved.",
+    "steps": [
+      {
+        "t_start": 0,
+        "t_end": 0.8,
+        "what_happens": "The crayon tip lowers and touches the skin at the left start point.",
+        "right_hand": "Pencil grip: thumb and index pinch the body, middle finger supports underneath, ring and little fingers curled. Lower slowly with a small wrist tilt.",
+        "left_hand": "Forearm completely still and relaxed, fingers softly curled and out of the way.",
+        "contact_and_grip": "Only the crayon tip touches the skin; no other fingertip or knuckle touches the arm.",
+        "object_changes": "Skin is bare until the tip lands. No colour before contact.",
+        "physics": "Tip meets skin with light pressure; the skin dimples very slightly.",
+        "natural_detail": "A tiny pre-contact hover and settle, as a real hand finds its spot."
+      },
+      {
+        "t_start": 0.8,
+        "t_end": 2.2,
+        "what_happens": "One smooth diagonal stroke is drawn left to right, leaving a continuous maroon line behind the tip.",
+        "right_hand": "Wrist and forearm glide as one unit; fingers keep the same grip. Constant, even pressure, no re-grip.",
+        "left_hand": "Still.",
+        "contact_and_grip": "Tip stays on the skin the whole stroke; the line appears only behind the tip.",
+        "object_changes": "The maroon line grows with the tip and stays one solid colour, about 5 cm, never branching.",
+        "physics": "Creamy pigment deposits as a slightly glossy line, matte once it settles.",
+        "natural_detail": "A faint ease-in at the start and ease-out at the end of the stroke."
+      },
+      {
+        "t_start": 2.2,
+        "t_end": 3,
+        "what_happens": "The crayon lifts off the skin, pausing just above the finished stroke.",
+        "right_hand": "Lift with the wrist, grip unchanged. Hold still for the last frames; no wipe or second pass.",
+        "left_hand": "Still.",
+        "contact_and_grip": "No contact after the lift.",
+        "object_changes": "The stroke is unchanged; the crayon shows no extra wear.",
+        "physics": "The hand slows to a stop without a snap.",
+        "natural_detail": "A slight settle of the lifted wrist, then stillness so the swatch reads clearly."
+      }
+    ],
+    "product_result": "One clean, even maroon swatch is clearly visible on the forearm.",
+    "forbidden_mistakes": [
+      "No face or head in frame.",
+      "Two hands at most, each attached to its own forearm, five digits each, no fused or extra fingers.",
+      "Exactly one stroke. No second stroke, smudge, rub or blend.",
+      "The crayon stays one size, shape and colour; the cap never appears.",
+      "Colour appears only behind the tip after contact, never before.",
+      "No text, logo or label is generated on the product other than what the reference shows.",
+      "No flames, no phone, no extra objects entering the frame."
+    ],
+    "duration_fit": "Three consecutive steps cover exactly 0-3 s: 0.8 s touch-down, 1.4 s stroke, 0.8 s lift and hold."
+  }
+}

@@ -1,0 +1,25 @@
+---
+name: realism-pipeline
+description: PERMANENT user rule (27-Oct-2026) — videos must look like a real person shot them on a phone, not AI-perfect; the realism layer is built into the bbd-omni-reel pipeline
+metadata:
+  type: feedback
+---
+
+User: "add imperfections so that it seems realistic. It is currently too perfect ... It seems AI ... We want it to look like a real person shot that video. Make this a permanent change in the pipeline." The user then said: "abhi kuch banana nahi bass save kar lo" (save only, make nothing yet).
+
+Implemented in ~/.claude/skills/bbd-omni-reel (a backup of the old skill is in the scratchpad, bbd-omni-reel.bak_*):
+- scripts/realism.py: PLATE_REALISM (append to every Nano Banana plate prompt), CLIP_CAMERA (handheld by a friend, never a locked tripod) and CLIP_REALISM (append to every Omni/Kling clip prompt), plus vf(seed) = an ffmpeg chain with handheld micro-shake, exposure/WB drift, phone grain and light sharpening.
+- assemble.py applies realism.vf per segment by default. plan.json "realism": false turns it off; "realism_strength" scales it. It touches the footage only (supers, logo and end slate stay clean). Bug fixed: setsar=1 after the shake crop, otherwise the end-slate concat fails with an SAR mismatch.
+- promptgen.py uses CLIP_CAMERA and appends CLIP_REALISM automatically. For hand-written prompts (music rows, the Diwali samples) add them by hand.
+- SKILL.md has a "REALISM" standing-rule row; references/PROMPTS.md has a REALISM section. Never ask for a "plain wall in the top 20%".
+
+**Why:** the user felt the reels looked AI-generated because they were too perfect.
+**How to apply:** every new plate, clip and edit, for BBD and Diwali alike. 01_DIWALI_REELS/02_SKILL_PIPELINE/scripts/assemble_fk.py inherits it through assemble.py. Rows 2 and 79 were made before this rule, so re-make them only if the user asks.
+- QC lesson (27-Oct, row 79): the user found 3 legs at 14 s that QC had missed. ALWAYS check the frames at 2 fps or more for limb/hand/foot COUNT and morphs, especially in sitting, cross-legged or bending poses. Avoid floor-sitting/cross-legged poses for footwear. Other misses: a non-festive outfit in a Diwali video, the face drifting between shots, the product shape morphing (lost toe-post), the product too small in frame, objects appearing in only one shot, illogical actions (a lit diya on a sofa, a fake matchstick).
+- PERMANENT FIX (27-Oct, user: "analyse this video problem and fix permanently, dobara kisi videos main ye galtiyan na ho"): realism.PLATE_GUARD and realism.CLIP_GUARD were added to every prompt (anatomy count, safe poses with no cross-legged or floor sitting, product big and exact, campaign-fit outfit, no fire handling, fixed room). scripts/visual_qc.py makes 4 fps full + lower-body sheets and qc/visual_checklist.json. assemble.py now REFUSES to build until every checklist item is true for every clip (plan "skip_visual_qc" exists only for re-edits of already-checked clips). SKILL.md, QC_BRIEF.md (items 13-16) and PROMPTS.md were updated.
+- 27-Oct: the user shared a reference ("video background should look like this, very real"): a girl unboxing a Flipkart box on a patterned carpet in an ordinary Indian living room (cream walls, ceiling fan, tube light, wall TV with cables, switchboard, wooden sofa with floral covers, flat dim light). It is saved as skill assets/refs/real_home_bg_ref.jpg. realism.HOME_BG and HOME_BG_REF were added, and SKILL.md/PROMPTS.md updated: every plate s1 uses the ref image as a background-style reference plus HOME_BG; festive props stay minimal; never a decorated set.
+- 27-Oct (later): user: "our customer is middle class not premium" + "same copy mat karo". Homes must be ORDINARY MIDDLE-CLASS (not premium), in the SPIRIT of the reference but NOT a copy of its room. Use a different home per video: realism.HOME_VARIANTS lists 6 (pale-green walls + steel almirah, light-blue + cane chairs, peach + plastic chairs, ...). Rotate them, and do not pass the ref image so strongly that the room gets cloned (describe it as "only the kind of home, not this room").
+- 27-Oct (later 2): the user said the pale-green room was too run-down ('isse thoda accha kar do'). Homes stay middle-class but NEAT and well kept: no damp patches, cracks, peeling paint or mess (added to realism.HOME_BG).
+- 27-Oct: user: 'camera jyada hil raha hai theek kar do'. Post-shake was cut from 9/7 px to 3.5/2.5 px with no fast jitter. CLIP_CAMERA/CLIP_REALISM now ask for a phone held FAIRLY STEADY (subtle movement, no visible shaking). Keep it gentle.
+- 27-Oct: user: 'background change hota rahega video wise but isi category ka background hoga' -> a different neat middle-class home per video (realism.HOME_VARIANTS), always the same category. All 6 Diwali videos are being re-made in diwali_reels_realbg/ (plan in BATCH_realbg.md).
+- 27-Oct: Omni safety-blocked CLIP_REALISM for a CHILD persona (row 270) because of its skin/body wording. Use realism.CLIP_REALISM_CHILD for any clip with a child.

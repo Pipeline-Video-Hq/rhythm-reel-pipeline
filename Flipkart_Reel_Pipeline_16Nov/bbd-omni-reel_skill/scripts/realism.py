@@ -1,0 +1,340 @@
+"""Make AI footage look like a real person filmed it on a phone (user rule, 27-Oct-2026: "it is too perfect,
+it seems AI ... we want it to look like a real person shot that video" - permanent).
+
+Two halves, both always on:
+  1. PROMPT text (PLATE_REALISM / CLIP_REALISM / CLIP_CAMERA) appended to every Nano Banana plate prompt and every
+     Omni / Kling clip prompt: handheld phone, imperfect framing, lived-in room, real skin, creased fabric.
+  2. A per-segment ffmpeg chain (vf(seed)) used by assemble.py on the footage only (supers, logo and end slate stay
+     clean): handheld micro-shake, a slow auto-exposure / white-balance drift, phone sensor grain, a touch of phone
+     sharpening. Every segment gets different phases so the shake never repeats.
+Turn it off for one reel only with plan.json "realism": false (do not, unless the user asks).
+"""
+import os, random
+
+PLATE_REALISM = (
+    "Make it look like a real, unedited photo taken on a mid-range Android phone by a friend, NOT a studio or AI image: "
+    "framing slightly imperfect (subject a little off-centre) but the camera held level, an ordinary real place "
+    "with a few everyday objects around, mixed warm and cool light with uneven exposure and a slightly blown "
+    "highlight from a lamp or window, real skin with pores, small blemishes and slight shine, a few flyaway hairs, "
+    "natural creases and small wrinkles in the clothes, relaxed natural posture (not a model pose, not symmetrical), "
+    "mild phone-camera noise and slight softness, no beauty filter, no perfect studio lighting, no glossy CGI look."
+)
+
+CLIP_CAMERA_TILT = ("Vertical phone vlog filmed hand-held while moving with her/him: a lively, slightly tilting and swaying "
+                    "phone camera, small natural reframes, still sharp")
+CLIP_CAMERA = ("Vertical phone video filmed by a friend standing in front of her/him, holding the phone fairly steady "
+               "with both hands: only very subtle natural movement, no visible shaking, no wobble, no sudden reframing")
+
+CLIP_REALISM = (
+    "It must look like a real person filmed this on a phone, not an AI video: a steady hand-held phone with only very subtle movement, the phone's "
+    "auto-exposure and focus adjusting slightly, small natural imperfections in movement (a small hesitation, a blink, "
+    "a glance off-camera before looking back - never touching hair or face, see CLIP_HANDS), real skin texture, fabric creasing as the body "
+    "moves, ordinary room light. No perfectly smooth gimbal motion, no cinematic glow, no plastic skin, no slow-motion."
+)
+
+
+# Child personas (Ira, Diya, Myra, Navya, boys): Omni safety-blocked CLIP_REALISM twice on row 270 (27-Oct-2026) because of
+# its skin/body wording. Use this child-safe version for any clip with a child.
+CLIP_REALISM_CHILD = (
+    "It must look like a real family video filmed on a phone by a parent, not an AI video: a steady hand-held phone with "
+    "only very subtle movement, the phone's auto-exposure adjusting slightly, small natural moments (a blink, a giggle, a "
+    "glance at the parent), ordinary room light. No cinematic glow, no slow-motion."
+)
+
+# ---- REAL HOME BACKGROUND (user 27-Oct-2026: "video background should look like this, very real" + reference
+# assets/refs/real_home_bg_ref.jpg - a girl unboxing a Flipkart box on a carpet in an ordinary Indian living room).
+HOME_BG_REF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "refs", "real_home_bg_ref.jpg")
+HOME_BG = (
+    "Background = an ordinary MIDDLE-CLASS Indian home (our customers are middle class, not premium) in the same SPIRIT "
+    "as the background reference image - but NOT a copy of it: do not reproduce its exact room, sofa, TV wall or carpet. "
+    "A different real home each video: e.g. a light-green or pale-blue painted wall with a steel almirah, a divan with a "
+    "printed bedsheet, plastic or cane chairs, a calendar and a wall clock, a small TV on a cabinet, a fridge with magnets, "
+    "a mirror, everyday clutter. Flat, slightly dim, uneven indoor tube-light/bulb light (no studio lighting, no bokeh, no "
+    "cinematic glow). Nothing premium, styled or showroom-like - BUT neat, clean and well kept: freshly painted walls with no "
+    "damp patches, cracks or peeling paint, a tidy room, clean floor, things in their place (user: 'isse thoda accha kar "
+    "do')."
+)
+# 28-Oct client: "Diwali doesn't compulsorily need rangoli and lights in the background ... for sports shoes, western dress this
+# looks odd". Add FESTIVE_EXTRAS ONLY when the theme/category allows decor (themes.py decides). The Diwali message lives in
+# the products and the title, not the set.
+# NO DIYAS AT ALL: Kling lit unlit diyas in rows 80 and 6 (28-Oct) -> retakes. Marigold + rangoli only.
+FESTIVE_EXTRAS = ("Small, ordinary Diwali touches in the room: a marigold string on a door or window and a small rangoli on the floor "
+                  "- NO diyas, candles or lamps anywhere in the frame - never a decorated set.")
+NO_DECOR = "No Diwali decoration at all: no rangoli, no diyas, no fairy lights, no marigold strings - an ordinary day."
+# DO NOT USE for new videos (user 28-Oct-2026: "saare videos ghar ke andar" / "ghar main hi banana"): every video is shot INSIDE
+# a home (HOME_BG + HOME_VARIANTS). Kept only to document the 3 pilot rows already made outside.
+LOCATION_VARIANTS = {
+    "society_park": "the walking track of an ordinary Indian housing-society park in the evening, benches, a few trees, parked scooters far behind",
+    "colony_lane": "a clean lane of an Indian middle-class colony, gates, potted plants, a parked scooter, soft daylight",
+    "stairs_lobby": "the stairwell / lift lobby of an ordinary Indian apartment building, tiled floor, letter boxes, a shoe rack",
+    "terrace": "the rooftop terrace of an Indian apartment building, water tank, clothes line, open sky, late-afternoon light",
+    "gym_corner": "a small neighbourhood gym corner, rubber floor, a few dumbbells and a mirror, tube lights",
+    "office_desk": "a modest Indian office floor, cubicles, a desk with a monitor and files, tube lights",
+    "canteen": "a college canteen corner, steel tables, plastic chairs, a menu board without readable text",
+    "balcony": "a small apartment balcony with potted plants, a grill railing, buildings across the road",
+}
+HOME_VARIANTS = [
+    "pale-green walls, a steel almirah, a divan with a blue printed bedsheet, a wall clock and a calendar",
+    "light-blue walls, cane chairs, a small TV on a wooden cabinet, a fridge with magnets in the corner",
+    "peach walls, a plastic chair set, a dining table with a plastic cover, a mirror and a key holder",
+    "off-white walls, a single bed with a floral sheet, a study table with books, a pedestal fan",
+    "yellow walls, a wooden sofa with plain cushions, a showcase cabinet with steel utensils and photo frames",
+    "lavender walls, a folding bed rolled away, a sewing machine table, clothes on a chair, a tube light",
+]
+
+
+# ---- GUARDS (user 27-Oct-2026, row 79: "3 legs at 14 s", casual clothes in a Diwali video, face drift, sandal lost its
+# toe-post, product tiny in frame, lit diya on a sofa, fake matchstick, Ganesh photo appearing in one shot only).
+# "analyse this video problem and fix permanently - dobara kisi video main ye galtiyan na ho".
+PLATE_GUARD = (
+    "Anatomy: exactly one person with exactly two arms, two hands with five fingers each, two legs and two feet - no "
+    "extra or missing limbs. Never a selfie pose (no arm stretched toward the camera). Pose: standing, walking, or sitting upright on a chair/sofa edge with both feet flat on the "
+    "floor; NOT cross-legged, NOT sitting on the floor, NOT legs tangled or crossed, NOT bending over. The product is "
+    "large, sharp and fully visible (for footwear: both feet and both shoes clearly in the lower part of the frame, every "
+    "strap, toe-post and ornament exactly as in the listing photo). Outfit suits the product and the theme (festive Indian wear "
+    "only for ethnic/festive themes; modern everyday wear for western, sports and casual products) and is the same in every shot. No fire handled by the person: no matches, lighters, candles or diyas being "
+    "lit or carried near cloth; diyas stay on the floor or a metal tray. Room objects stay where they are in every shot; "
+    "no new pictures, idols or furniture."
+)
+
+CLIP_GUARD = (
+    "Throughout the shot she/he keeps exactly two arms, two hands with five fingers, two legs and two feet - nothing "
+    "extra appears, nothing merges; feet stay on the floor and do not cross. The product never changes shape, colour, "
+    "straps or ornaments and stays large and visible. No one lights a match, lighter or diya; no fire near fabric. The "
+    "face stays exactly the same person as the first frame. No objects appear or disappear in the room."
+)
+
+# 28-Oct-2026 user, row 73 at 5 s: selfie arm holding the phone + one hand holding slippers + a THIRD hand touching her hair.
+# "dobara kabhi kisi videos main na ho". Causes: a selfie pose (one arm already used up by the phone) plus a free gesture
+# (hair touch) in the prompt -> the model grows an extra hand. Fix: never selfie, a fixed job for each hand, no hair/face touches.
+PLATE_NO_SELFIE = ("Never a selfie: she/he is filmed by someone else standing in front; no arm stretched toward the camera, "
+                   "no phone in hand unless it is the product.")
+CLIP_HANDS = ("HANDS: exactly two hands for the whole clip, each with ONE job that does not change: if she/he holds the product "
+              "with both hands, both hands stay on the product; if one hand holds it, the other hand stays relaxed at the side. "
+              "No touching hair or face, no waving while holding something, no new hand ever appears.")
+
+# 28-Oct-2026 user: "in videos main lipsync nahi, so lip move nahi hona chahiye". Music-only reels: NO talking mouth.
+CLIP_NO_TALK = ("She/he does NOT speak at all: lips stay closed or in a soft closed-mouth smile the whole time, no mouthing words, "
+                "no talking to the camera, no singing - only expressions, eyes and body movement.")
+
+
+def vf(seed=0, strength=1.0, camera="steady"):
+    """ffmpeg filter chain for ONE 1080x1920 segment (insert after scale/crop/fps, before format)."""
+    r = random.Random(seed)
+    s = strength
+    p = [r.uniform(0, 6.28) for _ in range(6)]
+    f = [r.uniform(0.22, 0.38), r.uniform(0.9, 1.4), r.uniform(2.6, 3.4)]
+    # 1) handheld micro-shake: zoom 4 % and wander the crop window (slow sway + small jitter)
+    ax, ay = (6.0 * s, 4.5 * s) if camera == "tilt" else (2.6 * s, 1.9 * s)  # 29-Oct client fb#8: "haath mein pakda, halka shake" (was 1.5/1.0). 28-Oct client: tilt/shake must not be evident in every video -> steady by default, only the "handheld vlog" theme sways
+    sx = (f"(iw-1080)/2+{ax:.1f}*sin(2*PI*{f[0]:.3f}*t+{p[0]:.2f})+{ax*0.45:.1f}*sin(2*PI*{f[1]:.3f}*t+{p[1]:.2f})"
+          f"+{ax*0.0:.1f}*sin(2*PI*{f[2]:.3f}*t+{p[2]:.2f})")
+    sy = (f"(ih-1920)/2+{ay:.1f}*sin(2*PI*{f[0]*0.8:.3f}*t+{p[3]:.2f})+{ay*0.45:.1f}*sin(2*PI*{f[1]*1.1:.3f}*t+{p[4]:.2f})"
+          f"+{ay*0.0:.1f}*sin(2*PI*{f[2]*0.9:.3f}*t+{p[5]:.2f})")
+    shake = f"scale=iw*1.04:ih*1.04:flags=bicubic,crop=1080:1920:x='{sx}':y='{sy}'"
+    # 2) auto-exposure / white-balance drift (very slow, small)
+    expo = (f"eq=eval=frame:brightness='{0.012*s:.3f}*sin(2*PI*0.11*t+{p[1]:.2f})':"
+            f"saturation='{1-0.04*s:.3f}+0.02*sin(2*PI*0.07*t+{p[2]:.2f})':contrast={1-0.03*s:.3f}")
+    wb = f"colorbalance=rm={0.012*s:.3f}:bm={-0.012*s:.3f}"
+    # 3) phone sensor grain + light phone sharpening
+    grain = f"noise=c0s={int(7*s)}:c0f=t+u:c1s={int(3*s)}:c1f=t"
+    sharp = "unsharp=5:5:0.35:3:3:0.0"
+    parts = [shake, "setsar=1"]
+    if camera == "tilt":   # slow +-1.5 deg roll, zoomed enough that no black corners show
+        parts.insert(0, f"rotate='{0.026*s:.3f}*sin(2*PI*0.18*t+{p[0]:.2f})':ow=iw:oh=ih:c=black,scale=iw*1.08:ih*1.08,crop=iw/1.08:ih/1.08")
+    return ",".join(parts + [expo, wb, sharp, grain])
+
+
+if __name__ == "__main__":
+    print(vf(1))
+
+# user 28-Oct-2026 (row 64): "notebook kahin nahi hona chahiye"
+NO_PAPER = (" No notebook, notepad, diary, shopping list, paper slip, pen or clipboard anywhere: not in her hands, not on the bed or table."
+            " Her hands only hold or show the product.")
+PLATE_GUARD = PLATE_GUARD + NO_PAPER
+CLIP_GUARD = CLIP_GUARD + NO_PAPER
+
+# user 28-Oct-2026: "footwear wale video main model dikhne main sahi ho, dikhne main beauty ho"
+FOOTWEAR_BEAUTY = (" She looks genuinely attractive and well groomed (still a real person, not a glossy model): neat styled hair,"
+                   " light natural makeup, fresh healthy skin with real texture and pores (no glow, no airbrushing), natural hair (not perfectly set), a warm confident smile, good posture, a flattering well-fitted outfit."
+                   " Her feet look beautiful: clean, smooth, soft skin, neatly shaped toenails with a fresh pedicure (nude or soft"
+                   " colour polish), no cracked heels, no dirt or dry skin, slim graceful ankles. Men: a genuinely handsome, fit young man with"
+                   " a stylish neat haircut, well-groomed beard or clean shave, clear skin, confident smile, smart well-fitted outfit, clean"
+                   " trimmed nails and clean well-kept feet. Kids: clean, neat hair, cute and tidy.")
+
+
+# =====================================================================================================================
+# 29-Oct-2026 CLIENT FEEDBACK #3 on the 6 approved samples (PERMANENT, overrides the definitions above).
+# "Reference: kal ke 6 approved samples ka camera aur light ka feel, aur aaj ke sample jaisa achha ghar. Dono ka beech."
+# User: "make sure AI video na lage, real lage".
+# =====================================================================================================================
+HOME_BG = (
+    "Background = a REAL, LIVED-IN Indian family home where people actually live - a decent, well-kept, nice-looking flat "
+    "(somewhere between an ordinary middle-class home and a well-off one), NOT a showroom, hotel or designer interior. "
+    "Normal Indian home things: a simple wooden or laminate almari/wardrobe, ordinary curtains, a plain painted wall, a decent "
+    "sofa or bed, a small side table - NOT a designer headboard + gallery frames + plants + cove lights all together (at most "
+    "one or two such touches). A FEW everyday things lying around naturally: a phone charger cable on the table, a water "
+    "bottle, a slightly tilted cushion, a dupatta or shirt over a chair back, slippers near the door - lived-in, but NOT "
+    "cluttered and NOT dirty. Clean floor, walls in good condition. "
+    "Light = normal home light: daylight from a window and/or the room's ordinary ceiling bulb, uneven, with soft natural "
+    "shadows and one side of the room a little brighter - NOT flat, even, soft studio light, NOT dark or gloomy."
+)
+HOME_VARIANTS = [
+    "a cream wall, a simple brown wooden wardrobe, a grey fabric sofa with two mismatched cushions, plain beige curtains, a water bottle and a charger on a small side table",
+    "a light-blue wall, a three-seater sofa with a printed throw, floral curtains, a wall clock, a TV on a simple unit, a dupatta over a chair",
+    "a pale-peach wall, a dining table with four chairs, a fruit bowl and a bottle on it, plain curtains, a steel-handled wardrobe in the corner",
+    "an off-white wall, a neatly made double bed with a printed bedsheet and two pillows, a simple wooden wardrobe with a mirror, a phone charging on the bedside table",
+    "a light-yellow wall, a wooden sofa with cushions, a small showcase with a few family photos, curtains half drawn, slippers by the door",
+    "a soft-green wall, a single bed with a cotton sheet, a study table with a laptop and a mug, a chair with a shirt on it, a window with plain curtains",
+]
+PLATE_REALISM = (
+    "It must look like a REAL, unedited photo taken on an ordinary Android phone by a family member, NOT an AI image, NOT a studio "
+    "or catalogue photo: the phone is held in a hand, framing a little off-centre and slightly imperfect (the camera roughly "
+    "level), normal home light with natural shadows and slightly uneven exposure (one side brighter, a window a little blown "
+    "out), NORMAL phone colours - not saturated, not HDR, not glossy, not colour-graded. REAL skin: visible pores, slightly uneven "
+    "tone, a little natural shine, small marks - NO smooth, airbrushed or glowing skin. Natural hair with a few flyaway strands, "
+    "not perfectly set. Clothes look like real home-worn clothes with natural creases and folds. A relaxed natural expression - "
+    "a soft half-smile, eyes maybe glancing to the side - NOT a fixed model smile or a posed model stance. Hands relaxed and "
+    "natural, holding the product casually. Mild phone-camera noise and slight softness."
+)
+CLIP_CAMERA = ("Vertical phone video filmed by a family member standing in front of her/him, phone held in one or two hands: "
+               "a light natural hand-held shake and small reframes, the subject a little off-centre - not a tripod, not a gimbal, "
+               "not a cinematic camera move")
+CLIP_REALISM = (
+    "It must look like a real person filmed this on a normal phone at home, NOT an AI video: light natural hand-held shake, the "
+    "phone's auto-exposure and focus adjusting a little, normal home light with natural shadows, normal phone colours (not "
+    "saturated, not HDR). She/he moves naturally and casually - shifts weight, small relaxed hand movements with the product, "
+    "glances at the person filming and sometimes to the side, a soft natural half-smile as if in the middle of a casual chat "
+    "(but the lips do NOT move, no talking - see CLIP_NO_TALK) - never standing stiff, never a fixed model smile or model poses. "
+    "Real skin texture, natural hair, real fabric creasing as the body moves. Never touching hair or face (see CLIP_HANDS). "
+    "No smooth gimbal motion, no cinematic glow, no plastic skin, no slow-motion, no perfect symmetry."
+)
+CLIP_REALISM_CHILD = (
+    "It must look like a real family video filmed at home on a normal phone by a parent, NOT an AI video: light natural hand-held "
+    "shake, auto-exposure adjusting a little, normal home light with natural shadows, normal phone colours. The child moves "
+    "naturally and playfully (not posing like a model), small natural moments - a blink, a giggle with closed lips, a glance at "
+    "the parent. No cinematic glow, no slow-motion."
+)
+
+# 29-Oct-2026 user (PERMANENT): "decor and ethnic wear main diwali decoration rakhna jaise sample sheet main hai, baaki kisi category
+# main nahi". Diwali decor ONLY for Home Decor + Women's Ethnic Wear, in the spirit of the client-approved board
+# (assets/refs/title_fonts_board_29oct.jpg): marigold garlands, a colourful rangoli, warm fairy lights, a toran. Still a real
+# lived-in home (feedback #3). Diyas stay OFF (Kling lights them - retakes on rows 80/6). Every other category = NO_DECOR.
+FESTIVE_EXTRAS = ("Diwali decoration in the room, like a real family home during Diwali: marigold garlands on the door frame and "
+                  "window, a colourful rangoli on the floor near the entrance, a string of warm fairy lights along the wall or "
+                  "curtain rail, a toran over the door. Real and homely, not a decorated studio set. NO diyas, candles or lamps "
+                  "with flames anywhere (unless the product itself is a diya/candle).")
+DECOR_VERTICALS = {"Women's Ethnic Wear", "Home Decor"}
+
+# =====================================================================================================================
+# 30-Oct-2026 user: "kal wale hi video rakho, ye pasand nahi aye, aur isme se hand movement aur hand gesture wagera in
+# references se le lo". The LOOK stays feedback #3 above (lived-in home, hand-held phone, normal light). The Pinterest-room /
+# tripod samples (REF30) were REJECTED. Only the try-on BODY LANGUAGE of the client's 5 Instagram reference reels is adopted.
+# Use ONE gesture per apparel/footwear shot (vary across the reel), on top of CLIP_HANDS (each hand keeps one job), CLIP_NO_TALK
+# and the worn-only rule. NOT adopted from the refs: mirror selfie with a phone, holding the garment up out of a bag, hangers.
+# =====================================================================================================================
+REF_GESTURES = {
+    "turn":       "she shifts her weight, then slowly turns to a 3/4 view and on round so the back of the outfit shows for a "
+                  "moment, and turns back to face the person filming with a soft smile; arms relaxed at her sides",
+    "dupatta":    "with one hand she lightly lifts the edge of the dupatta out to the side to show its print and border, then "
+                  "lets it fall; the other hand stays relaxed at her side",
+    "smooth":     "with one hand she smooths down the front of the kurta/top and straightens the hem, glances down at the "
+                  "outfit, then looks up at the person filming with a soft closed-mouth smile; the other hand relaxed",
+    "waist":      "she rests one hand lightly on her waist, weight on one leg, and sways gently from side to side, showing the "
+                  "fit of the outfit; the other arm relaxed",
+    "look_down":  "she looks down at her outfit, adjusts the sleeve or cuff with one hand, then looks up at the person filming "
+                  "and smiles with lips closed",
+    "flare":      "she holds the side of the sharara/skirt/dress lightly with one hand and gives a small half-twirl so it "
+                  "flares, then settles facing the person filming",
+    "detail":     "close-up of the outfit while she is WEARING it: her fingers lightly hold out the sleeve / dupatta / hem "
+                  "edge to show the embroidery or fabric work, then let go (only her hand and the worn garment in frame)",
+    "foot_show":  "footwear: with one hand she lifts the hem of her kurta/pants slightly so the footwear shows, points one foot "
+                  "forward and turns the heel a little; the other hand relaxed",
+}
+CLIP_TRYON_BODY = ("Body language like a real girl doing a try-on for her phone: relaxed, confident, a little playful, "
+                   "showing the outfit (not frozen, not a stiff model pose).")
+
+# =====================================================================================================================
+# 30-Oct-2026 user (after row 195 v2 "nicer home"): "background thoda aur downgrade kar sakte, like upper middle class".
+# STANDARD HOME for the FINAL pipeline = an ordinary UPPER-MIDDLE-CLASS Indian city flat: one step below the row 195 v2
+# room (which looked almost like a showroom), one step above the dated 28-Oct rooms. Use HOME_UMC + one HOME_UMC_VARIANTS[i]
+# in every plate (instead of HOME_VARIANTS), together with HOME_BG and PLATE_REALISM.
+# =====================================================================================================================
+HOME_UMC = (
+    "The home is an ordinary UPPER-MIDDLE-CLASS Indian city flat (a decent 2-3 BHK apartment of a salaried family), NOT a "
+    "designer or showroom interior and NOT a hotel: plain painted walls (a few small marks, a switchboard with a plug and "
+    "charger), a ceiling fan, a regular fabric sofa or wooden sofa set with ordinary cushions, simple printed or plain "
+    "curtains on a rod, glossy vitrified floor tiles, a laminate/wooden TV unit or almirah, one family photo frame or a "
+    "small showpiece, a money plant in a pot. Tidy but lived-in: a water bottle, a remote, a folded dupatta on the sofa arm, "
+    "slippers near the door. No rugs with designer patterns, no statement lamps, no gallery walls, no pampas "
+    "grass, no cove lighting."
+)
+HOME_UMC_VARIANTS = [
+    "living room: light-grey wall, a grey fabric three-seater sofa with two printed cushions, a laminate TV unit with a TV and "
+    "a set-top box, plain beige curtains, a wall clock, a money plant on the TV unit",
+    "bedroom: cream wall, a wooden double bed with a printed bedsheet and two pillows, a sliding-door laminate wardrobe with a "
+    "mirror panel, a side table with a lamp and a phone on charge, plain curtains",
+    "living-dining: pale-peach wall, a wooden sofa set with cushions, a four-seater dining table with a fruit bowl and a "
+    "water bottle, a small showcase with a few family photos and a showpiece, printed curtains",
+    "living room: off-white wall, a brown leatherette sofa with a throw, a centre table with a remote and a bowl, a ceiling "
+    "fan, a wooden almirah in the corner, a calendar on the wall, sheer curtains",
+    "bedroom: light-blue wall, a single cot with a cotton sheet, a study table with a laptop and a mug, a plastic chair with "
+    "a shirt on it, a steel almirah, plain curtains half drawn",
+    "living room: light-yellow wall, an L-shaped fabric sofa, a TV on the wall, a shoe rack near the door, a potted plant, a "
+    "framed family photo, simple curtains",
+]
+
+# 30-Oct-2026 user: "new living room is final" -> the FINAL standard home = the grey upper-middle-class LIVING ROOM
+# (preview assets/refs/home_umc_living_FINAL_30oct.png). Every plate: HOME_BG + HOME_UMC + HOME_UMC_LIVING[i], and pass the
+# reference png as a STYLE reference for the room level / light / phone look only (never its woman or dress).
+# The variants keep the same class level and layout family; only colours/furniture details change so videos don't look identical.
+HOME_UMC_LIVING_REF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "refs", "home_umc_living_FINAL_30oct.png")
+HOME_UMC_LIVING = [
+    "living room: light-grey wall, a grey fabric three-seater sofa with two printed cushions, a laminate TV unit with a TV and "
+    "a set-top box, plain beige curtains, a wall clock, a family photo frame, a money plant on the TV unit (THE APPROVED ROOM)",
+    "living room: off-white wall, a beige fabric sofa with two checked cushions, a wooden TV unit with a TV, light-brown "
+    "curtains, a wall clock, a family photo frame, a money plant in a ceramic pot",
+    "living room: pale-blue-grey wall, a dark-grey fabric sofa with two floral cushions, a laminate TV unit with a TV and a "
+    "router, cream curtains, a calendar on the wall, a family photo frame, a small plant",
+    "living room: light-cream wall, a brown fabric L-shaped sofa with cushions, a TV on a simple wall unit, plain grey curtains, "
+    "a wall clock, a framed family photo, a money plant on a stool",
+    "living room: very light-green wall, a grey fabric sofa with a folded throw, a wooden TV unit with a TV and a small "
+    "showpiece, beige curtains, a wall clock, a family photo, a potted plant near the window",
+    "living room: light-peach (clean, no stains) wall, a blue-grey fabric sofa with printed cushions, a laminate TV unit with a "
+    "TV, plain white-beige curtains, a wall clock, a family photo frame, a money plant",
+]
+
+# =====================================================================================================================
+# 30-Oct-2026 CLIENT: the row 195 v2 background is FINAL - "isi category ke background hona chahiye, but same background na,
+# isi category ka ho". So: every video gets a room of THIS class/style (well-kept modern Indian flat, warm and bright, real),
+# but a DIFFERENT room per video. Supersedes HOME_UMC / HOME_UMC_LIVING (the grey upper-middle-class room) for new videos.
+# Every plate: HOME_BG + HOME_V2 + HOME_V2_ROOMS[i], and pass HOME_V2_REF (row 195 v2 plate) as a STYLE reference for the
+# class, light and phone look only - never copy its exact room, sofa, print or the woman/dress.
+# =====================================================================================================================
+HOME_V2_REF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "refs", "home_v2_style_FINAL_30oct.png")
+HOME_V2 = (
+    "The home is a well-kept, modern Indian city apartment of a comfortable family - bright, warm and tidy, the class and feel "
+    "of the style reference photo - but it is a REAL lived-in flat, not a showroom, hotel or catalogue set: a switchboard on "
+    "the wall, a phone charger cable, a coffee mug or water bottle, a cushion slightly tilted, soft natural window daylight "
+    "with uneven light and soft shadows, light vitrified floor tiles. Simple, tasteful furniture in warm neutral colours; at "
+    "most one framed print and one or two plants. Keep the SAME class and feel as the reference, but this is a DIFFERENT room "
+    "with its own layout, colours and furniture - never copy the reference room."
+)
+HOME_V2_ROOMS = [
+    "living room: warm off-white wall, a beige fabric three-seater sofa with plain cushions and a folded throw, a wooden side "
+    "table with a small plant, a ceramic lamp and a mug, one abstract print, sheer white curtains on a big window, a cotton rug "
+    "(the approved row 195 v2 room - use it for ONE video only)",
+    "living room: soft sage-green accent wall, a cream sofa with two textured cushions, a low wooden coffee table with a "
+    "wooden tray and a mug, a floor plant in a woven basket, linen curtains, a jute rug",
+    "bedroom: light greige wall, a wooden double bed with white bedding and a mustard throw, a cane bedside table with a lamp and "
+    "a charger, a wall mirror with a wooden frame, sheer curtains, a potted plant by the window",
+    "living-dining: warm white wall, a grey-beige sofa with patterned cushions, a four-seater wooden dining table with a fruit "
+    "bowl and a water bottle beyond, a pendant light, light curtains, a money plant on a shelf",
+    "living room: pale-blush wall, a light-brown leatherette armchair and a beige sofa, a wooden TV console with a small plant "
+    "and a framed family photo, white sheer curtains, a round cotton rug",
+    "bedroom corner: cream wall, a wooden wardrobe with a full-length mirror door, an upholstered bench at the foot of a bed with "
+    "a light bedspread, a cane laundry basket, a plant, soft daylight from a side window",
+    "living room: light-beige textured wall, an olive-green sofa with cream cushions, a slim wooden console with a vase "
+    "and a lamp, a large window with sheer curtains, light tiles with a patterned cotton rug",
+    "living room by the balcony door: warm white wall, a beige sofa with a knit throw, a glass balcony door with sheer curtains "
+    "(daylight), a tall indoor plant, a small side table with a mug and a charger",
+]
