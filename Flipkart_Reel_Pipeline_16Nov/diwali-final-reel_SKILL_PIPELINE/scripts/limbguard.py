@@ -29,7 +29,7 @@ def scan(paths):
     return json.loads(r.stdout)
 
 
-def verdict(info, person=True):
+def verdict(info, person=True, printed_faces=False):
     """(ok, reasons). Detection errors never flag a picture."""
     if info.get("error"):
         return True, []
@@ -37,9 +37,9 @@ def verdict(info, person=True):
     if person:
         if info["hands"] > 2:
             why.append(f"{info['hands']} hands")
-        if info["faces"] > 1:
+        if info["faces"] > 1 and not printed_faces:   # 23-Nov test: baby packs print a baby face - not a second person
             why.append(f"{info['faces']} faces")
-        if info["bodies"] > 1:
+        if info["bodies"] > 1 and not printed_faces:   # a printed baby is a body too
             why.append(f"{info['bodies']} bodies")
     elif info["hands"] > 0 or info["faces"] > 0 or info["bodies"] > 0:
         why.append("a person or hand appears in a product-only picture")

@@ -364,7 +364,8 @@ def auto_letters(data_dir, rows):
             continue
         n = len(FAMILIES[r["family"]]["formats"]) if r.get("family") in FAMILIES else 5
         same = [k for k, x in sorted(sh.items()) if x["vertical"] == r["vertical"]]
-        out[int(row)] = LETTERS[same.index(int(row)) % n]
+        first = 5 if r.get("family") == "footwear" else 0   # user 23-Nov (Asif #11): footwear never uses A-E, only F onward
+        out[int(row)] = LETTERS[first + same.index(int(row)) % (n - first)]
     return out
 
 
@@ -392,6 +393,9 @@ def set_rows(data_dir, letter, rows):
     lines = list(csv.DictReader(open(p, newline="", encoding="utf-8")))
     want = {int(r) for r in rows}
     hit = set()
+    for r in lines:
+        if int(r["row"]) in want and letter in "ABCDE" and len(letter) == 1 and r.get("family") == "footwear":
+            raise SystemExit(f"row {r['row']}: footwear never uses A-E (user 23-Nov) - use F-V or AUTO")
     for r in lines:
         if int(r["row"]) in want:
             r["approach"] = "" if letter == "HOLD" else auto.get(int(r["row"]), "") if letter == "AUTO" else letter

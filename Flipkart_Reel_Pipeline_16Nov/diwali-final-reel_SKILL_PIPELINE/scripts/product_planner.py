@@ -443,6 +443,9 @@ HARD RULES (each comes from a real defect in delivered reels - follow all of the
    out (wipe, tissue, item), unwrapped, peeled, poured or squeezed out. Show the product already in its ready state in the first
    frame. Fragrance may be sprayed ONLY with the cap already off in the first frame: the bottle in a full grip, the index finger
    presses the nozzle once. Rules 44-49 above still apply. A plan that breaks this is rejected by the code.
+51. ALLOWED USE (23-Nov): fragrance, grooming and wearables get ONE allowed use read from the listing (it is given in the
+   product text as "ALLOWED USE"): a spray is sprayed, a roll-on is rolled, an attar is dabbed, a trimmer glides, a watch is
+   worn and the wrist turns. Show only that use (or simple presentation); any other use is rejected by the code.
 36. LAST FRAME PLAN (user 22-Nov): the last frame is made FROM the first frame by an image edit, then locked to it pixel for pixel
    and cropped to the push-in. Plan it in "last_frame": at most ONE change - one limb ends in a nearby place (at most 10 cm from
    where it started) or the product is turned at most 20 degrees - written in "change" and "edit_prompt"; "changed_region" names
@@ -603,6 +606,56 @@ def listing_fastening(spec):
             "text": txt}
 
 
+# 23-Nov plan step 3: ONE allowed use per product type, read from the LISTING (like footwear's fastening), told to the planner
+# and checked in code. Unknown type -> presentation only (held / turned), never an invented use.
+_ACTIONS = [
+    # (family, kind, listing words, allowed use, forbidden words in the plan's action text)
+    ("fragrance", "roll-on", r"roll[ -]?on", "glide the roll-on ball once along the inner wrist (cap already off)",
+     r"\b(spray\w*|mist\w*|nozzle|pump\w*|press\w* the)\b"),
+    ("fragrance", "attar", r"\b(attar|ittar|itr|perfume oil|concentrated oil)\b",
+     "touch the stopper / fingertip once to the inner wrist (stopper already out)",
+     r"\b(spray\w*|mist\w*|nozzle|roll\w*)\b"),
+    ("fragrance", "deodorant", r"\b(deodorant|deo|antiperspirant)\b", "one short spray toward the underarm or upper arm from 15 cm",
+     r"\b(roll\w*|dab\w*|stopper|pour\w*)\b"),
+    ("fragrance", "spray", r"\b(eau de|edp|edt|perfume|parfum|body mist|mist|spray|cologne)\b",
+     "the index finger presses the nozzle once, mist toward the wrist or neck from 15 cm (cap already off)",
+     r"\b(roll\w*|dab\w*|stopper|pour\w*|rub\w* the bottle)\b"),
+    ("grooming", "trimmer", r"\b(trimmer|clipper|shaver)\b", "glide the trimmer head once along the jawline (switched on, no cut hair shown)",
+     r"\b(spray\w*|pour\w*|squeez\w*|lather\w*|foam\w*)\b"),
+    ("grooming", "razor", r"\b(razor|blade)\b", "one slow stroke of the razor along the cheek (foam already on)",
+     r"\b(spray\w*|pour\w*|plug\w*|charg\w*)\b"),
+    ("grooming", "beard oil", r"\b(beard oil|beard serum|hair oil|oil)\b", "drops already in the palm, palms smooth it into the beard once",
+     r"\b(spray\w*|trim\w*|shav\w*|comb\w*)\b"),
+    ("grooming", "comb", r"\b(comb|brush)\b", "one stroke of the comb through the hair or beard",
+     r"\b(spray\w*|pour\w*|trim\w*|shav\w*)\b"),
+    ("grooming", "face wash", r"\b(face ?wash|cleanser|scrub)\b", "a small amount already on the fingertips, one circle on the cheek",
+     r"\b(spray\w*|trim\w*|shav\w*)\b"),
+    ("grooming", "wax", r"\b(wax|gel|pomade|clay)\b", "a small amount already on the fingertips, one pass through the front hair",
+     r"\b(spray\w*|trim\w*|shav\w*)\b"),
+    ("fashion_wearables", "watch", r"\b(watch|smartwatch|band)\b", "already worn on the wrist; turn the wrist once to show the dial",
+     r"\b(clasp|buckle|unbuckl\w*|take[s]? off|put[s]? on|strap it)\b"),
+    ("fashion_wearables", "sunglasses", r"\b(sunglass\w*|eyewear|spectacle\w*|goggle\w*)\b",
+     "already worn, or held by both temples and put on once", r"\b(fold\w*|unfold\w*|clean\w*|wip\w*)\b"),
+    ("fashion_wearables", "bag", r"\b(bag|handbag|backpack|sling|tote|clutch|wallet|purse)\b",
+     "carried by its handle or strap; one turn to show the front", r"\b(open\w*|unzip\w*|zip\w*|take[s]? out|put[s]? in)\b"),
+    ("fashion_wearables", "belt", r"\b(belt)\b", "already worn; a hand rests on the buckle", r"\b(unbuckl\w*|thread\w*|tighten\w*)\b"),
+]
+
+
+def product_actions(spec, family):
+    """-> {"kind", "allowed", "forbid"} for families with a code-enforced use, else None."""
+    sp = spec.get("specifications", {}) or {}
+    txt = " ".join([str(spec.get("title", ""))] + [str(v) for k, v in sp.items()
+                                                   if k.lower() in ("type", "ideal for", "fragrance classification", "form")]).lower()
+    for fam, kind, rx, allowed, forbid in _ACTIONS:
+        if fam == family and re.search(rx, txt):
+            return dict(kind=kind, allowed=allowed, forbid=forbid)
+    if family in ("fragrance", "grooming", "fashion_wearables"):
+        return dict(kind="unknown", allowed="presentation only: held in a full grip or worn, turned once to show it; no use shown",
+                    forbid=r"\b(spray\w*|appl\w*|rub\w*|dab\w*|trim\w*|shav\w*|open\w*)\b")
+    return None
+
+
 def product_text(spec, family, variant, approach):
     """The ONLY product data that goes to OpenAI: listing title, brand, specs, description + the style requested."""
     sp = spec.get("specifications", {})
@@ -610,6 +663,9 @@ def product_text(spec, family, variant, approach):
              f"Category family: {family.replace('_', ' ')}" + (f" ({variant}'s product)" if variant else ""),
              f"Title: {spec.get('title', '')}", f"Brand: {spec.get('brand', '')}", "Specifications:"]
     lines += [f"  {k}: {v}" for k, v in sp.items() if "address" not in k.lower() and k.lower() not in ("article number", "model id")]
+    _pa = product_actions(spec, family)
+    if _pa:   # 23-Nov rule 51: the ONE allowed use, from the listing (checked in code)
+        lines.append(f"ALLOWED USE (rule 51, from the listing - '{_pa['kind']}'): {_pa['allowed']}. No other use is shown.")
     if spec.get("description"):
         lines.append(f"Description: {spec['description']}")
     lines.append("Listing photos: attached (Image 1 is the main photo).")
@@ -633,10 +689,33 @@ def payload(text, photo_paths, family=None, letter=None):
         content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
     body = {"model": MODEL, "instructions": RULEBOOK + family_rules(family, letter), "input": [{"role": "user", "content": content}],
             "reasoning": {"effort": env("OPENAI_REASONING", "low")},
-            "max_output_tokens": int(env("OPENAI_MAX_OUTPUT", "18000"))}     # 23-Nov (user): 18k cap (thinking + answer); saved plans used 5.8k-15k     # 23-Nov (user: faster) - OPENAI_REASONING=medium/high for more care
+            "max_output_tokens": int(env("OPENAI_MAX_OUTPUT", "28000"))}   # Asif 23-Nov #5: 18k cut long replies (thinking + 18-22k chars)     # 23-Nov (user): 18k cap (thinking + answer); saved plans used 5.8k-15k     # 23-Nov (user: faster) - OPENAI_REASONING=medium/high for more care
+    # 23-Nov test: 11 of 20 low-effort replies were broken JSON. OpenAI refuses JSON mode together with its web search, and
+    # Serper is no longer called (Madhav 23-Nov), so research stays with OpenAI's web search and a broken reply is REPAIRED
+    # (syntax only) by repair_json() instead of being re-requested. Without web search, JSON mode is used directly.
     if WEB_TOOL:
         body["tools"] = [{"type": WEB_TOOL}]
+    else:
+        body["text"] = {"format": {"type": "json_object"}}
+        content[0]["text"] += "\n\nAnswer with one JSON object only."   # OpenAI requires the word 'json' in the input for JSON mode
     return body
+
+
+REPAIR_MODEL = env("OPENAI_REPAIR_MODEL", "gpt-5-mini")
+
+
+def repair_json(text):
+    """23-Nov: a plan reply with broken JSON syntax is fixed by a small JSON-mode call that may change SYNTAX ONLY
+    (commas, quotes, brackets) - every key and value must stay exactly as written. Cheap (no images, no search); the
+    repaired plan still goes through every check in validate(). Never re-sent automatically."""
+    a, b = text.find("{"), text.rfind("}")
+    body = {"model": REPAIR_MODEL, "reasoning": {"effort": "minimal"}, "max_output_tokens": 30000,
+            "text": {"format": {"type": "json_object"}},
+            "input": [{"role": "user", "content": [{"type": "input_text", "text":
+                      "The text below is meant to be ONE JSON object but has syntax errors. Return the same JSON object with the "
+                      "syntax fixed (missing or extra commas, quotes, brackets). Do NOT add, remove, reorder, shorten or reword any "
+                      "key or value.\n\n" + text[a:b + 1 if b > a else len(text)]}]}]}
+    return response_text(call(body))
 
 
 def call(body):
@@ -687,6 +766,13 @@ def parse(text):
     if a < 0 or b <= a:
         raise ValueError("no JSON object in the reply")
     p = json.loads(text[a:b + 1])
+    # 23-Nov test: a reply sometimes nests the whole plan inside "product" (scene, shots, person... one level too deep).
+    # Lift exactly those top-level sections back up - nothing is added or changed.
+    if isinstance(p, dict) and isinstance(p.get("product"), dict) and "scene" not in p and isinstance(p["product"].get("scene"), dict):
+        for k_ in ("hero", "prerequisites", "person", "scene", "shots", "forbidden", "approach_note", "schema_version", "part_states",
+                   "parts_role", "open_state_spec", "last_frame", "props", "camera_plan"):
+            if k_ in p["product"] and k_ not in p:
+                p[k_] = p["product"].pop(k_)
     # 23-Nov: shape check before validate() (a string where an object is expected crashed the whole row's planning)
     if not isinstance(p, dict):
         raise ValueError("the reply is not a JSON object")
@@ -984,6 +1070,25 @@ def handling_errors(sh, family):
             f"grip (or resting on the surface) in its ready state; nothing is picked up, put down, opened or pulled out"] if hits else []
 
 
+def complete_beats(sh):
+    """Asif 23-Nov #8: GPT often ends the beats at 2.5 s; append the standard camera-only push-in beat to 4.0 s, every part
+    copied from the last beat and held still. Nothing is invented: only the camera moves, toward the planned target."""
+    try:
+        bs = sorted(sh.get("beats") or [], key=lambda b: float(b["t_start"]))
+        end = float(bs[-1]["t_end"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return
+    if not 2.4 <= end < 3.95:
+        return
+    last = bs[-1]; tgt = sh.get("push_in_target") or "the product"
+    nb = {k: v for k, v in last.items()}
+    nb.update(t_start=end, t_end=4.0, moves="camera", movement=f"nothing moves; the camera pushes in slowly toward {tgt}",
+              camera=f"slow push-in toward {tgt}", still="everything else holds its last position")
+    if isinstance(last.get("everything"), dict):
+        nb["everything"] = {k: ("still" if k != "camera" else f"slow push-in toward {tgt}") for k in last["everything"]}
+    sh["beats"] = bs + [nb]
+
+
 def validate_shot(sh, plan, spec, family):
     """Errors/warnings of ONE shot variant."""
     E, W = [], []
@@ -998,6 +1103,14 @@ def validate_shot(sh, plan, spec, family):
     if sh.get("no_person"):
         return validate_photo_shot(sh, plan, family)
     E += handling_errors(sh, family)
+    _pa = product_actions(spec or {}, family)
+    if _pa:   # 23-Nov rule 51
+        _txt = _NEG.sub("", " | ".join([str(sh.get("action_summary", ""))] + [str(b_.get("movement", "")) for b_ in sh.get("beats", [])
+                                                                               if isinstance(b_, dict)]).lower())
+        _bad = sorted({m.group(0) for m in re.finditer(_pa["forbid"], _txt)})
+        if _bad:
+            E.append(f"rule 51 allowed use: the listing makes this a {_pa['kind']} ({_pa['allowed']}) - "
+                     f"'{', '.join(_bad[:3])}' is not its use")
     for b_ in sh["beats"]:
         if str(b_.get("moves", "")).strip().lower() not in ("nothing", "none", "") and len(str(b_.get("movement", "")).split()) < 20:
             W.append(f"beat {b_.get('t_start')}-{b_.get('t_end')}: movement is under 20 words - describe hand, fingers, path, cm and speed in more detail")
@@ -1144,6 +1257,7 @@ def validate_shot(sh, plan, spec, family):
     if not 2.5 - 1e-6 <= ae <= 3.0 + 1e-6:
         E.append(f"action_end_s {sh.get('action_end_s')} must be 2.5 (at most 3.0 for a longer real action)")
         ae = 2.5
+    complete_beats(sh)   # Asif 23-Nov #8: a plan whose beats stop at 2.5-3.9 s gets the standard push-in beat
     try:
         beats = sorted(sh["beats"], key=lambda b: float(b["t_start"]))
         ts = [(float(b["t_start"]), float(b["t_end"])) for b in beats]
@@ -1321,7 +1435,7 @@ def validate_shot(sh, plan, spec, family):
                 E.append(f"the surface '{sf.get('name')}' is not in the start framing '{sh.get('framing_start')}' - start at {sorted(okf)}")
         allowed = sw | set(re.findall(r"[a-z]{4,}", str((plan.get("scene") or {}).get("anchor", "")).lower())) | set(re.findall(r"[a-z]{4,}", first))
         later = " ".join([str(sh.get("end_state", ""))] + [" ".join(str(b.get(x, "")) for x in ("moves", "movement", "contact", "support", "product_state")) for b in sh.get("beats", [])]).lower()
-        for fw in re.findall(r"\b(table|counter|shelf|stool|tray|bench|desk|dresser|cabinet|trolley)\b", later):
+        for fw in re.findall(r"\b(table|counter(?![- ]?clockwise)|shelf|stool|tray|bench|desk|dresser|cabinet|trolley)\b", later):   # Asif #9
             if fw not in allowed:
                 E.append(f"a '{fw}' appears in the shot but is not the planned surface or in the first frame (nothing is added mid-shot)")
                 break
@@ -1476,8 +1590,16 @@ def validate(plan, spec, family):
                 E.append(f"part_states: '{x.get('part')}' changes {x.get('start')} -> {x.get('end')} without a 'how' (hand action)")
     try:   # 22-Nov: real-life size sanity - a hand-held product must fit one real hand
         big_ = max(cm_values(str(ls.get("dimensions_cm", ""))) or [0])
-        if pr.get("use_kind") in ("handheld_display", "applied_to_body", "operated") and big_ > 45:
-            E.append(f"life_size {big_:g} cm is too large to be hand-held with one real hand (check the dimensions or the use_kind)")
+        _soft = re.search(r"\b(fabric|cloth|textile|towel|bedsheet|bed sheet|blanket|dohar|quilt|saree|sari|dupatta|stole|curtain|"
+                          r"shirt|trouser|kurta|dress|top|t-shirt|tshirt|jeans|pant)\b",
+                          (str(pr.get("type", "")) + " " + str(pr.get("category_item", ""))).lower())
+        _held = str(pr.get("held_how", "")).lower()
+        _two = re.search(r"\b(both hands|two hands)\b|\brests? (on|flat)\b|\bon the (bed|table|counter|floor|sofa|shelf)\b", _held)
+        # 23-Nov test: soft goods are held folded (a 220 cm fabric length is not a 220 cm object in the hand); a big rigid item
+        # is fine with both hands or resting on a surface - only a big item in ONE hand is an error
+        if pr.get("use_kind") in ("handheld_display", "applied_to_body", "operated") and big_ > 45 and not _soft and not _two:
+            E.append(f"life_size {big_:g} cm is too large for one hand - hold it with both hands at its sides or let it rest on "
+                     f"a surface, and say so in product.held_how")
         if 0 < big_ < 0.5:
             E.append(f"life_size {big_:g} cm - dimensions look like metres or a wrong unit (use cm)")
     except ValueError:
@@ -1494,7 +1616,10 @@ def validate(plan, spec, family):
     # 23-Nov: REAL SIZE is grounded in the listing - when the listing states a size with a unit, the plan must agree (25 %)
     lst = listing_cm(spec)
     mine = cm_values(str(ls.get("dimensions_cm", "")))
-    if lst and mine and abs(max(mine) - max(lst)) > 0.25 * max(lst):
+    if lst and mine and abs(max(mine) - max(lst)) > 0.25 * max(lst) and len(lst) < 2:
+        W.append(f"life_size longest side {max(mine):g} cm vs a single listing size field ({max(lst):g} cm) - one field may be a part or "
+                 f"the thickness (Asif 23-Nov #6); not blocking")
+    elif lst and mine and abs(max(mine) - max(lst)) > 0.25 * max(lst):
         E.append(f"life_size longest side {max(mine):g} cm disagrees with the listing ({max(lst):g} cm) - use the listing's size")
     if lst and "typical" in str(ls.get("dimensions_source", "")).lower():
         E.append(f"dimensions marked 'typical' although the listing gives a size ({max(lst):g} cm) - use the listing's size")
@@ -1621,18 +1746,11 @@ def plan_products(row_dir, items, family, variant, approach, confirmed=False, re
         todo.append((slot, pid, spec, k, text, ph))
     if not todo:
         return plans, problems
-    print(f"OpenAI requests needed: {len(todo)} (model {MODEL}, web research {'on' if WEB_TOOL else 'off'}). ONLY product data is sent:")
+    print(f"OpenAI requests needed: {len(todo)} (model {MODEL}, {'OpenAI web search' if WEB_TOOL else 'no web search, JSON mode'}). ONLY product data is sent:")
     for slot, pid, spec, k, text, ph in todo:
         print(f"  slot {slot} {pid}: '{spec.get('title', '')[:70]}' + {len(spec.get('specifications', {}))} specs"
               f"{' + description' if spec.get('description') else ''} + {len(ph)} listing photos ({', '.join(os.path.basename(x) for x in ph)})")
     print(f"  exact request texts: {reqdir}/slot_*.json (+ the rule book, the same for every product)")
-    if False:      # 23-Nov: Serper removed
-        def _miss(pid, spec):
-            cp_ = os.path.join(PLAN_DIR, "serper", f"{pid}.json"); have = json.load(open(cp_)) if os.path.exists(cp_) else {}
-            return sum(1 for q in serper_queries(spec) if q not in have)
-        nq = sum(_miss(pid, spec) for _, pid, spec, *_ in todo)
-        print(f"  + Google searches via Serper: {nq} (up to 4 per product, only those not searched before; only the product title/brand is searched), "
-              f"their results are added to that product's OpenAI request")
     if not confirmed:
         print("DRY RUN - nothing was sent. After the user approves, run again with --confirmed.")
         problems.append(f"{len(todo)} product(s) not planned yet (dry run)")
@@ -1674,7 +1792,11 @@ def plan_products(row_dir, items, family, variant, approach, confirmed=False, re
             return slot, None, probs + [f"slot {slot} {pid}: OpenAI request failed ({ex}) - NOT retried; ask the user before sending again"]
         json.dump(resp, open(os.path.join(PLAN_DIR, k + ".raw.json"), "w"), indent=1, ensure_ascii=False)
         try:
-            p = parse(response_text(resp))
+            try:
+                p = parse(response_text(resp))
+            except json.JSONDecodeError as jx:      # 23-Nov: syntax only -> repair instead of re-planning (and paying) again
+                probs.append(f"slot {slot} {pid}: reply had broken JSON ({jx}) - repaired (syntax only)")
+                p = parse(repair_json(response_text(resp)))
         except Exception as ex:
             return slot, None, probs + [f"slot {slot} {pid}: reply was not valid JSON ({ex}); raw reply in {k}.raw.json"]
         p["_meta"] = dict(letter=approach["letter"])

@@ -32,14 +32,14 @@ import fcntl, glob, hashlib, json, os, re, shutil, socket, subprocess, sys, time
 import continuity, limbguard, imgqueue, netwait
 import pipeline as P
 
-FOLDER = "Flipkart_Fashion-Rhythm_AI_Profiles"
+FOLDER = os.environ.get("FK_OMNI_FOLDER", "Flipkart_Fashion-Rhythm_AI_Profiles")   # Asif 23-Nov #14: a batch can use its own folder
 BEAUTY_ENV = os.path.join(P.PIPE, "beauty_pipeline", ".env")
 GAP = 1.0                 # user 23-Nov: requests 1 s apart (shared by every process; was 2 s)
 RATE_WAIT = 75            # one wait after a rate-limit rejection
 PROMPT_WARN, PROMPT_HARD = 16000, 19500    # Omni's prompt limit is 20000 characters
 PACE_FILE = "/private/tmp/fk_omni_pace"
 IMAGE_MODEL = os.environ.get("FK_IMAGE_MODEL", "gemini-3.1-flash-image")   # 23-Nov: switch with FK_IMAGE_MODEL=<id> (list: omni_models.py)
-IMG_REQUEUES = 20         # 23-Nov change B: a rate-limited image waits in the queue up to 20 times, then the row stops
+IMG_REQUEUES = int(os.environ.get("FK_IMG_REQUEUES", "500"))   # Asif 23-Nov #2: a rejection is not billed - never stop a good row on it; was 20
 QUEUE_LOG = os.path.join(os.path.dirname(P.WORK), "image_queue.log")
 DRY = False
 SHEET_PROMPT = ("Product reference sheet of the EXACT product in Image 1, unchanged - do not substitute another design. One 3:2 "
@@ -121,9 +121,11 @@ def tool(name, **args):
             if paid:
                 raise StopRun(f"{name}: no answer ({e}) - Omni may have accepted it, so it was NOT re-sent; check the Omni assets "
                               f"for the folder before sending again")
-            if attempt >= 3:
-                raise StopRun(f"{name}: no answer ({e})")
-            time.sleep(5); continue
+            # 23-Nov test (row 754): a FREE status poll / upload request dropped by a busy Omni ("Remote end closed connection")
+            # stopped the row; free requests are simply asked again, with growing waits (~15 min in total)
+            if attempt >= 15:
+                raise StopRun(f"{name}: no answer after {attempt} tries ({e})")
+            time.sleep(min(60, 5 * attempt)); continue
         try:   # 23-Nov: an unexpected reply never crashes the run without STOPPED.json (and its text is kept for the ids)
             if raw.lstrip().startswith(("event:", "data:")):
                 raw = next(l[5:] for l in raw.splitlines() if l.startswith("data:"))
@@ -187,11 +189,36 @@ def duration(path):
         return 0.0
 
 
+def frozen_lead(path, max_s=0.25):
+    """23-Nov plan step 4: seconds of identical frames at the start of a clip (Omni repeats the first picture ~2 frames)."""
+    try:
+        import numpy as np
+        r = subprocess.run(["ffmpeg", "-v", "error", "-t", f"{max_s + 0.1:.2f}", "-i", path, "-vf", "scale=96:170,format=gray",
+                            "-f", "rawvideo", "-"], capture_output=True, check=True)
+        f = np.frombuffer(r.stdout, np.uint8).reshape(-1, 170, 96).astype(np.float32)
+        fps = 24.0
+        for i in range(1, len(f)):
+            if np.abs(f[i] - f[i - 1]).mean() > 0.4:      # first real change
+                return min(max_s, i / fps) if i > 1 else 0.0
+        return 0.0
+    except Exception:      # noqa: BLE001 - a measurement must never stop a paid row
+        return 0.0
+
+
 def normalize_clip(path, want=4.0):
-    """Exactly 4.000 s: trim a longer clip, hold the last frame of a slightly shorter one. The original is kept."""
+    """Exactly 4.000 s: trim a longer clip, hold the last frame of a slightly shorter one. The original is kept.
+    23-Nov: frozen frames at the start are cut off when the clip is long enough to still give a full 4.0 s."""
     D = duration(path)
     if D <= 0:
         raise StopRun(f"{os.path.basename(path)} cannot be read (broken file)")
+    lead = frozen_lead(path)
+    if lead > 0 and D - lead >= want - 0.03:
+        shutil.copy2(path, path[:-4] + ".orig.mp4")
+        tmp = path[:-4] + ".norm.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{lead:.3f}", "-i", path, "-t", f"{want:.3f}", "-an", "-c:v", "libx264",
+                        "-preset", "fast", "-crf", "14", "-pix_fmt", "yuv420p", tmp], check=True)
+        os.replace(tmp, path)
+        return duration(path), f"frozen start {lead:.2f} s cut"
     if abs(D - want) <= 0.03:
         return D, "ok"
     if D < want - 0.45:
@@ -210,11 +237,15 @@ def upload(path):
         tool("upload_media"); return "dry_upload"
     r = tool("upload_media", method="service_command", filename=os.path.basename(path),
              mime_type="image/png" if path.endswith(".png") else "image/jpeg")
-    out = subprocess.run(r["upload_command"].replace("LOCAL_FILE_PATH", path), shell=True, capture_output=True, text=True)
-    try:
-        return json.loads(out.stdout)["asset_id"]
-    except Exception:
-        raise StopRun(f"upload of {os.path.basename(path)} failed: {(out.stdout or out.stderr)[:300]}")
+    out = None
+    for wait in (0, 10, 30, 60):   # 23-Nov test: Omni answered 502 under load; an upload is free, so it is tried again
+        time.sleep(wait)
+        out = subprocess.run(r["upload_command"].replace("LOCAL_FILE_PATH", path), shell=True, capture_output=True, text=True)
+        try:
+            return json.loads(out.stdout)["asset_id"]
+        except Exception:
+            continue
+    raise StopRun(f"upload of {os.path.basename(path)} failed 4 times: {(out.stdout or out.stderr)[:300]}")
 
 
 def local_plate(src, dst, zoom=1.0):
@@ -232,7 +263,7 @@ def local_plate(src, dst, zoom=1.0):
     bg.save(dst, quality=93)
 
 
-def clip_limb_report(d, n, clip):
+def clip_limb_report(d, n, clip, printed=False):
     """Report only (never blocks): Apple Vision hand/face count on 5 frames of the finished clip -> limbs_report.json."""
     if os.environ.get("FK_LIMB_GUARD") == "0":
         return
@@ -244,7 +275,7 @@ def clip_limb_report(d, n, clip):
             paths.append(p)
         infos = limbguard.scan(paths); bad = []
         for t, i in zip((0.2, 1.0, 2.0, 3.0, 3.8), infos):
-            ok, why = limbguard.verdict(i, True)
+            ok, why = limbguard.verdict(i, True, printed_faces=printed)
             if not ok:
                 bad.append(dict(t=t, why=why))
         rp = os.path.join(d, "limbs_report.json")
@@ -446,7 +477,7 @@ def run(row, o):
         except Exception as e:
             log(d, f"note: limb guard could not run on {nm} ({e})"); return
         ids["_meta"].setdefault("limb", {})[nm] = dict(hands=info["hands"], faces=info["faces"], bodies=info["bodies"])
-        ok, why = limbguard.verdict(info, person)
+        ok, why = limbguard.verdict(info, person, printed_faces="baby" in str(v.get("vertical", "")).lower())
         if not ok:
             raise StopRun(f"{nm}: possible extra limb / wrong picture - {', '.join(why)} (Apple Vision count) - the clip made from it is NOT generated")
 
@@ -460,6 +491,14 @@ def run(row, o):
                 shutil.move(path, os.path.join(junk, os.path.basename(path) + time.strftime(".%H%M%S")))
             ids.pop(nm); ids["_meta"].pop(nm, None); save(); log(d, f"{nm}: old picture moved to plates/junk, generating it again (approved)")
         refs = [ref(nm, x) for x in ref_keys]
+        if len(set(refs)) < len(refs):   # Asif 23-Nov #10: --sheet-photo makes sheet_N == listing_N; Omni refuses DUPLICATE_ASSET
+            keep, newpos = [], []
+            for a_ in refs:
+                if a_ not in keep:
+                    keep.append(a_)
+                newpos.append(keep.index(a_))
+            prompt = re.sub(r"IMAGE_REF_(\d+)", lambda m_: f"IMAGE_REF_{newpos[int(m_.group(1))]}" if int(m_.group(1)) < len(newpos) else m_.group(0), prompt)
+            refs = keep
         h = H(prompt, ref_keys, ar, model)
         if nm in ids:
             old = ids["_meta"].get(nm)
@@ -473,24 +512,52 @@ def run(row, o):
         # 23-Nov (Garvit): Nano Banana 2 = gemini-3.1-flash-image (cheaper, better, higher rate limit) pinned explicitly, so a
         # change of the server's default can never swap the model; Pro only where a slot asks for it (--sheet-pro)
         args = dict(prompt=prompt, image_asset_ids=refs, aspect_ratio=ar, folder=FOLDER, model=model or IMAGE_MODEL)
-        if False and o["cands"] > 1 and person is not None:   # best-of-N disabled (user 22-Nov: no automatic checks): N renders (each billed), the cleanest by hand count is kept
-            args["generations"] = o["cands"]
-        r = tool("generate_nano_banana_image", **args)
-        if False and o["cands"] > 1 and person is not None and r.get("images"):
-            best = None
-            for i, im in enumerate(r["images"]):
-                aid = im.get("image_asset_id") or im.get("asset_id"); url = im.get("image_url") or im.get("url")
-                tmp = f"{path}.cand{i}.jpg"; fetch(url, tmp)
-                try:
-                    inf = limbguard.scan([tmp])[0]; okc, why = limbguard.verdict(inf, person); sc = (0 if okc else 1, inf["hands"], inf["faces"])
-                except Exception:
-                    sc = (0, 0, 0)
-                if best is None or sc < best[0]:
-                    best = (sc, aid, tmp)
-            ids[nm] = best[1]; ids["_meta"][nm] = h; save(); shutil.copy2(best[2], path); log(d, f"{nm} best of {len(r['images'])}: {best[1]} (score {best[0]})")
-        else:
-            ids[nm] = r["image_asset_id"]; ids["_meta"][nm] = h; save()
-            fetch(r["image_url"], path); log(d, f"{nm} {ids[nm]}")
+        r = image_job(nm, h, args)
+        ids[nm] = r["image_asset_id"]; ids["_meta"][nm] = h; save()
+        fetch(r["image_url"], path); log(d, f"{nm} {ids[nm]}")
+
+    def image_job(nm, h, args):
+        """23-Nov (Garvit: "images are generated on the portal but we get 504"): a synchronous request waited for the finished
+        picture on one open connection; Nano Banana 2.1 takes longer than Omni's gateway allows, the gateway answered 504,
+        Omni still made (and billed) the picture, and the id was lost. Now the picture is QUEUED (wait_for_result=false):
+        the job id comes back in seconds and is saved at once; we then poll get_image_status. A resume polls the saved job
+        and never pays twice."""
+        jk = f"img_job:{nm}"
+        if DRY:
+            return tool("generate_nano_banana_image", **args)
+        tries, rate_waits = 0, 0
+        while True:
+            job = ids.get(jk)
+            if not job:
+                r0 = tool("generate_nano_banana_image", **dict(args, wait_for_result=False))
+                if r0.get("image_asset_id") and r0.get("image_url"):
+                    return r0                               # finished at once
+                job = r0.get("image_job_id") or (r0.get("image_job_ids") or [None])[0]
+                if not job:
+                    raise StopRun(f"{nm}: Omni queued nothing (no image_job_id): {json.dumps(r0)[:300]}")
+                ids[jk] = job; ids["_meta"][jk] = h; save(); log(d, f"{nm} queued {job}")
+            t0 = time.time()
+            while True:
+                st = tool("get_image_status", image_job_ids=[job], wait_seconds=50)
+                im = next((x for x in (st.get("images") or []) if x.get("image_job_id") in (job, None)), None) or {}
+                s_ = im.get("status")
+                if s_ == "completed" and im.get("image_asset_id"):
+                    ids.pop(jk, None); ids["_meta"].pop(jk, None)
+                    return im
+                if s_ in ("failed", "not_found"):
+                    code = str(im.get("error_code") or im.get("message") or s_)
+                    rl = "RATE_LIMIT" in code.upper()
+                    if rl:
+                        imgqueue.rejected()
+                    # a rate limit is not a picture (not billed): wait in the queue up to IMG_REQUEUES times;
+                    # any other retryable failure is sent once more; everything else stops the row
+                    if im.get("retryable") and ((rl and rate_waits < IMG_REQUEUES) or (not rl and tries < 1)):
+                        rate_waits += rl; tries += (not rl)
+                        ids.pop(jk, None); ids["_meta"].pop(jk, None); save()
+                        log(d, f"{nm}: {code} (retryable) - queued again"); break
+                    raise StopRun(f"{nm}: picture {s_}: {code} {im.get('message', '')} - job {job}, NOT re-sent")
+                if time.time() - t0 > 1800:
+                    raise StopRun(f"{nm}: picture not finished after 30 min (job {job}) - not re-sent; run again to keep waiting")
 
     def need_listing(n):
         if f"listing_{n}" not in ids:
@@ -511,11 +578,34 @@ def run(row, o):
             alt = os.path.join(d, "products", f"p{n}_{o['sheet_alt'][n]}.jpg")
             ids[f"listing_alt_{n}"] = ids.get(f"listing_alt_{n}") or upload(alt); keys = [f"listing_alt_{n}"]
         _sc = str(slots.get(n, {}).get("sheet_scale", "")).strip()
-        _sp = SHEET_PROMPT + ((f" SIZE GUIDE (panel 6 only): lay a plain 30 cm wooden ruler with clear centimetre marks right beside the product, "
+        try:
+            _title = json.load(open(os.path.join(d, "specs", f"slot_{n}.json"))).get("title", "")
+        except (OSError, ValueError):
+            _title = ""
+        # 23-Nov test: Nano Banana refused a "ghost mannequin" sheet for unstitched fabric - flat goods are shown flat
+        _flat = bool(re.search(r"\b(fabric|unstitched|bedsheet|bed sheet|curtain|towel|dohar|blanket|quilt|rug|mat|carpet|"
+                               r"cushion cover|table cloth|tablecloth)\b", _title.lower()))
+        _sp = (SHEET_PROMPT.replace("Clothing on an invisible ghost mannequin; ", "") +
+               " This product is FLAT CLOTH: show it laid flat and neatly folded as sold, no mannequin, no person." if _flat else SHEET_PROMPT) + ((f" SIZE GUIDE (panel 6 only): lay a plain 30 cm wooden ruler with clear centimetre marks right beside the product, "
                                f"at the SAME scale as the product, so its real size ({_sc}) can be read; the ruler is only a guide, not part of the product.")
                               if re.search(r"\d", _sc) else "")
+        # Asif 23-Nov #13: one reference sheet per PRODUCT, reused by every row that has it (and never paid for twice)
+        _pid = (re.search(r"pid=([A-Za-z0-9]+)", str(v["products"][n - 1])) or [None, None])[1]
+        _cache = os.path.join(P.DATA, "product_plans", "sheets", f"{_pid}.json") if _pid else None
+        _plain = n not in o["sheet_alt"] and n not in o["sheet_pro"]
+        if _plain and _cache and f"sheet_{n}" not in ids and os.path.exists(_cache):
+            c_ = json.load(open(_cache))
+            if os.path.exists(c_.get("file", "")):
+                shutil.copy2(c_["file"], os.path.join(sp, "reference_sheet.png"))
+                ids[f"sheet_{n}"] = c_["asset_id"]; ids["_meta"][f"sheet_{n}"] = c_.get("hash", "cached"); save()
+                log(d, f"sheet_{n} reused from product {_pid} ({c_['asset_id']}, made for row {c_.get('row')}) - nothing sent"); return
         make(f"sheet_{n}", _sp, keys, os.path.join(sp, "reference_sheet.png"), "3:2",
              "gemini-3-pro-image" if n in o["sheet_pro"] else None)
+        if _plain and _cache and f"sheet_{n}" in ids and not DRY and not os.path.exists(_cache):
+            os.makedirs(os.path.dirname(_cache), exist_ok=True)
+            keep_ = os.path.join(os.path.dirname(_cache), f"{_pid}.png"); shutil.copy2(os.path.join(sp, "reference_sheet.png"), keep_)
+            json.dump(dict(asset_id=ids[f"sheet_{n}"], hash=ids["_meta"].get(f"sheet_{n}"), file=keep_, row=int(row)),
+                      open(_cache, "w"), indent=1)
     for n in range(1, 6):          # uploads first (cheap), then every sheet at once
         if n in only:
             os.makedirs(os.path.join(d, "specs", f"slot_{n}"), exist_ok=True); need_listing(n)
@@ -606,7 +696,8 @@ def run(row, o):
                     break
                 fetch(s["video_url"], out, "video"); D, note = normalize_clip(out)
                 try:   # 23-Nov: free local checks of the finished clip (hands / faces, product size drift) -> shown at finish
-                    clip_limb_report(d, n, out); clip_size_report(d, n, out, slots[n])
+                    clip_limb_report(d, n, out, printed="baby" in str(v.get("vertical", "")).lower())
+                    clip_size_report(d, n, out, slots[n])
                 except Exception as e_:      # noqa: BLE001 - a report must never stop a paid row
                     log(d, f"note: clip report for slot {n} could not run ({e_})")
 

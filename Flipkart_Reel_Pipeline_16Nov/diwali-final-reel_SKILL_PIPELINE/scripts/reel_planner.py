@@ -258,17 +258,23 @@ def movement_type(shot):
     return "other"
 
 
+NO_CHANGE = re.compile(r"^(none|no|nil|n/?a|-|no change|unchanged|same|stays( the)? same|not changed|no changes?|nothing|remains?)\b", re.I)
+INVISIBLE_KEY = re.compile(r"fragrance|perfume|scent|smell|deo|"
+                           r"skin|palm|forearm|residue|wrist|finger|nail|cream|lotion", re.I)   # + Asif 23-Nov #7: wiped between products   # 23-Nov test: states no camera can see never order a reel
+
+
 def order_slots(plans, assign, rooms):
     """Topological order: a product that NEEDS a state (beard) comes before one that CHANGES it; then room, then slot."""
     before = {s: set() for s in plans}   # before[x] = slots that must come before x
     for a, pa in plans.items():
         ch = {k.lower(): str(v).lower().strip() for k, v in (pa["person"].get("state_changes") or {}).items()
-              if not POSE_KEY.search(k.lower())}   # poses/angles reset at the cut between products - only lasting states count
+              if not POSE_KEY.search(k.lower())   # poses/angles reset at the cut between products - only lasting states count
+              and not NO_CHANGE.match(str(v).strip()) and not INVISIBLE_KEY.search(k)}   # 23-Nov test: "none ..." is NOT a change
         for b, pb in plans.items():
             if a == b:
                 continue
             rq = {k.lower(): str(v).lower().strip() for k, v in (pb["person"].get("state_requires") or {}).items()
-                  if not POSE_KEY.search(k.lower())}
+                  if not POSE_KEY.search(k.lower()) and not INVISIBLE_KEY.search(k)}
             if any(k in rq and rq[k] != v for k, v in ch.items()):
                 before[a].add(b)
     order, done = [], set()

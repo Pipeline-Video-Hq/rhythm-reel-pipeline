@@ -1141,10 +1141,24 @@ def finish(row):
     for f in ("pass.json", "FAILED.json"):
         if os.path.exists(os.path.join(qd, f)):
             os.remove(os.path.join(qd, f))
-    bad, warn = [], []
+    bad, warn, card = [], [], []
     master = os.path.join(d, "final", b["out_name"]); p480 = master.replace(".mp4", "_480p.mp4")
 
+    def rec(name, problems=(), warnings=()):
+        """23-Nov plan step 6: every check lands in ONE scorecard (qc/scorecard.json) with PASS / WARN / FAIL."""
+        problems, warnings = list(problems), list(warnings)
+        bad.extend(problems); warn.extend(warnings)
+        card.append(dict(check=name, result="FAIL" if problems else "WARN" if warnings else "PASS", detail=problems + warnings))
+
+    def scorecard(final):
+        json.dump(dict(row=int(row), result=final, checks=card, at=time.strftime("%Y-%m-%d %H:%M:%S")),
+                  open(os.path.join(qd, "scorecard.json"), "w"), indent=1, ensure_ascii=False)
+        print(f"\nSCORECARD row {row}: {final}")
+        for c in card:
+            print(f"  {c['result']:4}  {c['check']}" + (f"  - {'; '.join(c['detail'])[:160]}" if c["detail"] else ""))
+
     def fail():
+        scorecard("FAILED")
         json.dump(dict(row=int(row), master=master, problems=bad, warnings=warn, at=time.strftime("%Y-%m-%d %H:%M:%S")),
                   open(os.path.join(qd, "FAILED.json"), "w"), indent=1, ensure_ascii=False)
         raise SystemExit(f"row {row}: FAILED - not filed, not uploadable (the clips are kept):\n  - "
@@ -1153,34 +1167,34 @@ def finish(row):
         if is_beauty(row):
             finish_beauty(row, d, b)
         else:
-            bad += check_planned(row, d)
-            bad += check_sheets(row, d)
-            t_bad, t_warn = check_text(row, d); bad += t_bad; warn += t_warn
+            rec("5 product takes (4 s, order, no black / frozen / cut, readable)", check_planned(row, d))
+            rec("product sheets and locks", check_sheets(row, d))
+            rec("on-screen title = sheet text, price claim vs listings", *check_text(row, d))
             env = dict(os.environ, BBD_OUT=WORK, FK_BATCH=os.path.join(DATA, "batch_100.json"))
             subprocess.run(["nice", "-n", "19", PY, ASM_FK, str(row)], check=True, env=env)
     except (subprocess.CalledProcessError, SystemExit, OSError, ValueError, KeyError) as e:
-        bad.append(f"assembly failed: {e}")
+        rec("assembly", [f"assembly failed: {e}"])
         fail()
     D = _probe_s(master)
     if D is None:
-        bad.append("the assembled master cannot be read")
+        rec("master readable", ["the assembled master cannot be read"])
     else:
         cap = min(30.0, 5 * approaches.PER_PRODUCT + endslate_s()) + 0.10      # +0.1 s encode rounding; client cap 30 s
-        if D > cap:
-            bad.append(f"final is {D:.2f} s > {cap - 0.10:.2f} s (5 x {approaches.PER_PRODUCT} s per product + end slate, max 30 s)")
+        rec(f"length <= {cap - 0.10:.1f} s (is {D:.2f} s)",
+            [f"final is {D:.2f} s > {cap - 0.10:.2f} s (5 x {approaches.PER_PRODUCT} s per product + end slate, max 30 s)"] if D > cap else [])
         if not is_beauty(row):
-            bad += check_cuts(row, master)
+            rec("no cut inside a product", check_cuts(row, master))
     subprocess.run(["nice", "-n", "19", "ffmpeg", "-v", "error", "-y", "-i", master, "-vf", "scale=480:854:flags=lanczos",
                     "-c:v", "libx264", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", p480], check=True)
+    _rw = []
     for rp_, what in (("limbs_report.json", "extra hand / face"), ("size_report.json", "product changes size")):   # 23-Nov
         try:
             for k_, v_ in json.load(open(os.path.join(d, rp_))).items():
                 if v_.get("flagged"):
-                    warn.append(f"slot {k_}: possible {what} in the clip ({len(v_['flagged'])} flag(s), {rp_}) - look before upload")
+                    _rw.append(f"slot {k_}: possible {what} in the clip ({len(v_['flagged'])} flag(s), {rp_}) - look before upload")
         except (OSError, ValueError, AttributeError):
             pass
-    for w in warn:
-        print("WARN:", w)
+    rec("free clip reports (hand count, size drift)", [], _rw)
     if bad:
         fail()
     # 16-Nov user: local folders like Drive -> BAU finals in 01_LATEST_FINAL/Day N/<Category> (+ Day N/1080p_masters)
@@ -1201,6 +1215,7 @@ def finish(row):
     filed = os.path.join(cdir, os.path.basename(p480))
     json.dump(dict(row=int(row), file=filed, size=os.path.getsize(filed), duration=D, warnings=warn,
                    at=time.strftime("%Y-%m-%d %H:%M:%S")), open(os.path.join(qd, "pass.json"), "w"), indent=1, ensure_ascii=False)
+    scorecard("PASSED" + (" with warnings" if warn else ""))
     print("done:", filed, f"({D:.2f} s, all checks passed)")
 
 

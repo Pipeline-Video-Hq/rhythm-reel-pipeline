@@ -13,14 +13,21 @@ Clips, uploads and status polls do not use this queue.
     state_line()                   gap, sent and rejected in the last hour, requests waiting (for image_queue.log)"""
 import fcntl, json, os, tempfile, time
 
-START_GAP, MAX_GAP, SPEEDUP_AFTER = 30.0, 120.0, 10
+START_GAP, MAX_GAP, SPEEDUP_AFTER = 30.0, 60.0, 10   # 23-Nov test: 120 s made 4 rows wait ~1.5 h behind a shared batch; refusals are not billed
 MIN_GAP = float(os.environ.get("FK_IMG_MIN_GAP", "15"))   # 23-Nov: lower it if Omni's image limit is raised (Nano Banana 2 has a higher one)
 _DIR = os.environ.get("FK_STATE_DIR") or ("/private/tmp" if os.path.isdir("/private/tmp") else tempfile.gettempdir())
-STATE = os.path.join(_DIR, "fk_image_queue.json")
+STATE = os.path.join(_DIR, "fk_image_queue.json")   # default; per-token file below (Asif 23-Nov #3)
+
+
+def _state():
+    """One queue per Omni token: two batches on two tokens (two quotas) never slow each other down."""
+    import hashlib
+    tok = os.environ.get("OMNI_TOKEN", "")
+    return os.path.join(_DIR, f"fk_image_queue_{hashlib.sha1(tok.encode()).hexdigest()[:8]}.json") if tok else STATE
 
 
 def _edit(fn):
-    with open(STATE, "a+") as f:
+    with open(_state(), "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
             f.seek(0); raw = f.read().strip()
